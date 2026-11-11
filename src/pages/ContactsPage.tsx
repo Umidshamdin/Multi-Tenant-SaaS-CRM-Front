@@ -1,0 +1,17 @@
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { contactApi, customerApi } from '../api/salesflow';
+import type { Contact, Customer } from '../api/types';
+import { usePaged } from '../hooks/useCrud';
+import { useToast } from '../contexts/ToastContext';
+import { errorText } from '../api/http';
+import { AddButton, Empty, ErrorBox, Field, FormActions, Loading, Modal, Pager, PageTitle, Panel, Table } from '../components/UI';
+export function ContactsPage() {
+  const notify = useToast(); const [customers, setCustomers] = useState<Customer[]>([]); const [customerId, setCustomerId] = useState('');
+  useEffect(() => { customerApi.list(1).then(x => { setCustomers(x.items); if (!customerId && x.items.length) setCustomerId(x.items[0].id); }).catch(e => notify(errorText(e), false)); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const loader = useCallback((p: number) => customerId ? contactApi.list(customerId, p) : Promise.resolve({ items: [] as Contact[], page: 1, pageSize: 20, totalCount: 0, totalPages: 0 }), [customerId]);
+  const { data, loading, error, page, setPage, refresh } = usePaged(loader);
+  const [edit, setEdit] = useState<Contact | 'new' | null>(null); const [fullName, setFullName] = useState(''); const [email, setEmail] = useState(''); const [phone, setPhone] = useState(''); const [busy, setBusy] = useState(false);
+  function open(x: Contact | 'new') { setEdit(x); setFullName(x === 'new' ? '' : x.fullName); setEmail(x === 'new' ? '' : x.email || ''); setPhone(x === 'new' ? '' : x.phone || ''); }
+  async function save(e: FormEvent) { e.preventDefault(); setBusy(true); try { if (edit === 'new') await contactApi.create({ customerId, fullName, email: email || undefined, phone: phone || undefined }); else if (edit) await contactApi.update(edit.id, { fullName, email: email || undefined, phone: phone || undefined }); setEdit(null); notify('Əlaqəli şəxs yadda saxlanıldı.'); await refresh(); } catch (err) { notify(errorText(err), false); } finally { setBusy(false); } }
+  return <><PageTitle title="Əlaqəli şəxslər" description="Müştərilərə bağlı kontaktların idarəsi" action={<AddButton onClick={() => open('new')} label="Yeni kontakt"/>}/><Panel><div className="toolbar"><select value={customerId} onChange={e => { setCustomerId(e.target.value); setPage(1); }}><option value="">Müştəri seçin</option>{customers.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select></div>{error && <ErrorBox text={error}/ >}{loading ? <Loading/> : data?.items.length ? <Table heads={['Ad', 'E-poçt', 'Telefon', 'Əməliyyat']}>{data.items.map(x => <tr key={x.id}><td><strong>{x.fullName}</strong></td><td>{x.email || '—'}</td><td>{x.phone || '—'}</td><td><button className="btn btn-small" onClick={() => open(x)}>Redaktə</button></td></tr>)}</Table> : <Empty text="Bu müştəri üçün kontakt yoxdur."/>}<Pager data={data} page={page} setPage={setPage}/></Panel>{edit && <Modal title={edit === 'new' ? 'Yeni kontakt' : 'Kontakta düzəliş'} onClose={() => setEdit(null)}><form onSubmit={e => void save(e)}><Field label="Ad, soyad"><input required maxLength={160} value={fullName} onChange={e => setFullName(e.target.value)}/></Field><Field label="E-poçt"><input type="email" value={email} onChange={e => setEmail(e.target.value)}/></Field><Field label="Telefon"><input value={phone} onChange={e => setPhone(e.target.value)}/></Field><FormActions onCancel={() => setEdit(null)} saving={busy}/></form></Modal>}</>;
+}
