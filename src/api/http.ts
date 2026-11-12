@@ -1,50 +1,146 @@
-const TOKEN_KEY = 'salesflow.session.jwt';
-const API_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 
-export const sessionToken = {
-    get: () => sessionStorage.getItem(TOKEN_KEY),
-    set: (token: string) => sessionStorage.setItem(TOKEN_KEY, token),
-    clear: () => sessionStorage.removeItem(TOKEN_KEY)
-};
+import type { AuthToken } from './types';
+
+const TOKEN_KEY = 'salesflow-session';
+
+export const baseUrl = (import.meta.env.VITE_API_BASE_URL || 'https://localhost:7206/api').replace(/\/+$/, '');
+
+export function readSession(): AuthToken | null {
+    try {
+        const raw = sessionStorage.getItem(TOKEN_KEY);
+        return raw ? JSON.parse(raw) as AuthToken : null;
+    } catch {
+        return null;
+    }
+}
+
+export function writeSession(token: AuthToken | null) {
+    if (token) sessionStorage.setItem(TOKEN_KEY, JSON.stringify(token));
+    else sessionStorage.removeItem(TOKEN_KEY);
+}
+
 
 export class ApiError extends Error {
-    constructor(public status: number, message: string) { super(message); this.name = 'ApiError'; }
+    readonly status: number;
+
+    constructor(message: string, status: number) {
+        super(message);
+        this.name = 'ApiError';
+        this.status = status;
+    }
 }
 
-function errorMessage(body: unknown, fallback: string): string {
-    if (!body || typeof body !== 'object') return fallback;
-    const data = body as Record<string, unknown>;
-    if (typeof data.detail === 'string' && data.detail) return data.detail;
-    if (typeof data.message === 'string' && data.message) return data.message;
-    if (Array.isArray(data.errors)) return data.errors.join(' · ');
-    if (data.errors && typeof data.errors === 'object') return Object.values(data.errors).flat().join(' · ');
-    if (typeof data.title === 'string') return data.title;
-    return fallback;
+
+export function qs(params: Record<string, string | number | boolean | null | undefined> = {}) {
+    const q = new URLSearchParams();
+
+    Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && String(value) !== '')
+            q.set(key, String(value));
+    });
+
+    const s = q.toString();
+    return s ? `?${s}` : '';
 }
 
-export async function api<T>(path: string, options: RequestInit = {}, token = sessionToken.get()): Promise<T> {
-    const headers = new Headers(options.headers);
-    headers.set('Accept', 'application/json');
-    if (options.body !== undefined) headers.set('Content-Type', 'application/json');
-    if (token) headers.set('Authorization', `Bearer ${token}`);
-    let response: Response;
-    try { response = await fetch(`${API_URL}${path}`, { ...options, headers }); }
-    catch { throw new ApiError(0, 'API ilə əlaqə qurulmadı. Backend-in işlədiyini və Vite proxy portunu yoxla.'); }
-    if (response.status === 204) return undefined as T;
-    const contentType = response.headers.get('content-type') || '';
-    const data: unknown = contentType.includes('application/json') ? await response.json().catch(() => null) : await response.text().catch(() => null);
-    if (!response.ok) throw new ApiError(response.status, errorMessage(data, response.status === 401 ? 'Giriş tələb olunur və ya tenant seçilməyib.' : `Sorğu uğursuz oldu (${response.status}).`));
-    return data as T;
+async function request<T>(method: string, route: string, payload?: unknown): Promise<T> {
+    const token = readSession();
+
+    if (token && Date.parse(token.expiresAtUtc) <= Date.now()) {
+        writeSession(null);
+        window.dispatchEvent(new Event('salesflow:expired'));
+        throw new ApiError('Sessiyanın vaxtı bitib. Yenidən daxil olun.', 401);
+    }
+
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), 30000);
+
+    try {
+        const response = await fetch(`${baseUrl}${route.startsWith('/') ? route : `/${route}`}`, {
+            method,
+            signal: abort.signal,
+            headers: {
+                Accept: 'application/json',
+                ...(payload === undefined ? {} : { 'Content-Type': 'application/json' }),
+                ...(token ? { Authorization: `Bearer ${token.accessToken}` } : {})
+            },
+            body: payload === undefined ? undefined : JSON.stringify(payload)
+        });
+
+        if (response.status === 401) {
+            writeSession(null);
+            window.dispatchEvent(new Event('salesflow:expired'));
+        }
+
+        if (response.status === 204) return undefined as T;
+
+        const text = await response.text();
+        let data: unknown = text;
+
+        try {
+            if (text) data = JSON.parse(text);
+        } catch {
+            // Backend plain text qaytara bilər.
+        }
+
+        if (!response.ok) {
+            const obj = (typeof data === 'object' && data ? data : {}) as Record<string, unknown>;
+
+            const errors = obj.errors && typeof obj.errors === 'object'
+                ? Object.values(obj.errors).flat().join(' • ')
+                : '';
+
+            const message = String(
+                errors || obj.detail || obj.message || obj.title ||
+                (response.status === 404
+                    ? 'Məlumat tapılmadı və ya endpoint mövcud deyil.'
+                    : `API xətası: ${response.status}`)
+            );
+
+            throw new ApiError(message, response.status);
+        }
+
+        return data as T;
+    } catch (error) {
+        if (error instanceof ApiError) throw error;
+
+        if (error instanceof DOMException && error.name === 'AbortError')
+            throw new ApiError('Sorğunun vaxtı bitdi.', 408);
+
+        throw new ApiError(
+            'Backend ilə əlaqə yaradılmadı. API ünvanını, HTTPS sertifikatını və CORS-u yoxla.',
+            0
+        );
+    } finally {
+        clearTimeout(timer);
+    }
 }
 
-export const get = <T>(path: string) => api<T>(path);
-export const post = <T>(path: string, body?: unknown) => api<T>(path, { method: 'POST', ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
-export const put = <T>(path: string, body: unknown) => api<T>(path, { method: 'PUT', body: JSON.stringify(body) });
-export const patch = <T>(path: string, body?: unknown) => api<T>(path, { method: 'PATCH', ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+export const http = {
+    get: <T>(route: string) => request<T>('GET', route),
+    post: <T>(route: string, payload?: unknown) => request<T>('POST', route, payload),
+    put: <T>(route: string, payload?: unknown) => request<T>('PUT', route, payload),
+    patch: <T>(route: string, payload?: unknown) => request<T>('PATCH', route, payload),
+    delete: <T>(route: string) => request<T>('DELETE', route)
+};
 
-export function queryString(params: Record<string, string | number | boolean | null | undefined>): string {
-    const qs = new URLSearchParams();
-    Object.entries(params).forEach(([key, value]) => { if (value !== null && value !== undefined && value !== '') qs.set(key, String(value)); });
-    const text = qs.toString();
-    return text ? `?${text}` : '';
+export function localOffsetIso(value: string): string | null {
+    if (!value) return null;
+
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return null;
+
+    const mins = -d.getTimezoneOffset();
+    const sign = mins >= 0 ? '+' : '-';
+    const pad = (n: number) => String(n).padStart(2, '0');
+
+    return `${value.length === 16 ? `${value}:00` : value}${sign}${pad(Math.floor(Math.abs(mins) / 60))}:${pad(Math.abs(mins) % 60)}`;
+}
+
+export function toDateInput(value?: string) {
+    return value ? value.slice(0, 10) : '';
+}
+
+export function errorText(error: unknown): string {
+    return error instanceof Error ? error.message : 'Naməlum xəta baş verdi.';
 }

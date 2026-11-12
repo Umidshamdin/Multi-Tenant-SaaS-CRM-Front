@@ -1,24 +1,85 @@
-import { createContext, useContext, useEffect, useState } from 'react';
-import type { ReactNode } from 'react';
-import { CheckCircle2, AlertCircle, X } from 'lucide-react';
-interface Toast { id: number; text: string; kind: 'success' | 'error'; }
-const ToastContext = createContext<(text: string, kind?: 'success' | 'error') => void>(() => {});
-let nextId = 1;
+
+import {
+    createContext,
+    useContext,
+    useState,
+    type ReactNode
+} from 'react';
+
+import { CircleCheck, CircleX, X } from 'lucide-react';
+
+type ToastKind = boolean | 'success' | 'error' | 'info' | 'warning';
+
+type ToastMessage = {
+    id: number;
+    text: string;
+    ok: boolean;
+};
+
+type ToastContextValue = {
+    notify: (text: string, kind?: ToastKind) => void;
+};
+
+const ToastContext = createContext<ToastContextValue | null>(null);
+
 export function ToastProvider({ children }: { children: ReactNode }) {
-    const [items, setItems] = useState<Toast[]>([]);
-    function notify(text: string, kind: 'success' | 'error' = 'success') {
-        setItems(old => [...old, { id: nextId++, text, kind }].slice(-4));
+    const [messages, setMessages] = useState<ToastMessage[]>([]);
+
+    function notify(text: string, kind: ToastKind = true) {
+        const id = Date.now() + Math.random();
+        const ok = kind !== false && kind !== 'error' && kind !== 'warning';
+
+        setMessages(previous => [
+            ...previous.slice(-3),
+            { id, text, ok }
+        ]);
+
+        window.setTimeout(() => {
+            setMessages(previous => previous.filter(x => x.id !== id));
+        }, 4500);
     }
-    function remove(id: number) { setItems(old => old.filter(item => item.id !== id)); }
-    return <ToastContext.Provider value={notify}>{children}<div className="toast-stack" role="status" aria-live="polite">
-        {items.map(item => <ToastItem key={item.id} item={item} onClose={() => remove(item.id)} />)}
-    </div></ToastContext.Provider>;
+
+    function remove(id: number) {
+        setMessages(previous => previous.filter(x => x.id !== id));
+    }
+
+    return (
+        <ToastContext.Provider value={{ notify }}>
+            {children}
+
+            <div className="toast-area">
+                {messages.map(message => (
+                    <div
+                        key={message.id}
+                        className={`toast ${message.ok ? 'ok' : 'bad'}`}
+                    >
+                        {message.ok
+                            ? <CircleCheck size={18}/>
+                            : <CircleX size={18}/>
+                        }
+
+                        <span>{message.text}</span>
+
+                        <button
+                            type="button"
+                            aria-label="Bağla"
+                            onClick={() => remove(message.id)}
+                        >
+                            <X size={15}/>
+                        </button>
+                    </div>
+                ))}
+            </div>
+        </ToastContext.Provider>
+    );
 }
-function ToastItem({ item, onClose }: { item: Toast; onClose: () => void }) {
-    useEffect(() => { const timer = window.setTimeout(onClose, 4500); return () => window.clearTimeout(timer); }, [onClose]);
-    return <div className={`toast ${item.kind}`}>
-        {item.kind === 'success' ? <CheckCircle2 size={19}/> : <AlertCircle size={19}/>}<span>{item.text}</span>
-        <button type="button" className="icon-btn" aria-label="Bağla" onClick={onClose}><X size={16}/></button>
-    </div>;
+
+export function useToast() {
+    const context = useContext(ToastContext);
+
+    if (!context) {
+        throw new Error('ToastProvider missing');
+    }
+
+    return context.notify;
 }
-export const useToast = () => useContext(ToastContext);
