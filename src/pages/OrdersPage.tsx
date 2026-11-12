@@ -1,0 +1,15 @@
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { enterpriseApi } from '../api/salesflow';
+import type { Quote } from '../api/types';
+import { usePaged } from '../hooks/useCrud';
+import { errorText } from '../api/http';
+import { useToast } from '../contexts/ToastContext';
+import { AddButton, Badge, ConfirmAction, Empty, ErrorBox, Field, FormActions, Loading, Modal, Money, Pager, PageTitle, Panel, Table } from '../components/UI';
+export function OrdersPage() {
+  const notify = useToast(); const loader = useCallback((p: number) => enterpriseApi.orders(p), []); const { data, error, loading, page, setPage, refresh } = usePaged(loader);
+  const [quotes, setQuotes] = useState<Quote[]>([]); useEffect(() => { enterpriseApi.quotes().then(x => setQuotes(x.items)).catch(() => {}); }, []);
+  const [modal, setModal] = useState(false); const [quoteId, setQuoteId] = useState(''); const [number, setNumber] = useState(''); const [busy, setBusy] = useState(false);
+  async function create(e: FormEvent) { e.preventDefault(); setBusy(true); try { await enterpriseApi.createOrder(quoteId, number); setModal(false); notify('Sifariş yaradıldı.'); await refresh(); } catch (err) { notify(errorText(err), false); } finally { setBusy(false); } }
+  async function act(id: string, kind: 'fulfill' | 'cancel') { try { await enterpriseApi.orderAction(id, kind); notify('Sifariş statusu yeniləndi.'); await refresh(); } catch (err) { notify(errorText(err), false); } }
+  return <><PageTitle title="Sifarişlər" description="Təsdiq olunmuş qiymət təkliflərindən sifariş yaradın" action={<AddButton label="Yeni sifariş" onClick={() => setModal(true)}/>}/><Panel>{error && <ErrorBox text={error}/ >}{loading ? <Loading/> : data?.items.length ? <Table heads={['Sifariş nömrəsi', 'Təklif', 'Cəmi', 'Status', 'Əməliyyat']}>{data.items.map(x => <tr key={x.id}><td><strong>{x.number}</strong></td><td>{quotes.find(q => q.id === x.quoteId)?.number || x.quoteId.slice(0, 8)}</td><td><Money value={x.totalAmount} currency={x.currency}/></td><td><Badge text={x.status}/></td><td><div className="actions">{x.status === 'Pending' && <><ConfirmAction label="Tamamla" onConfirm={() => void act(x.id, 'fulfill')}/><ConfirmAction danger label="Ləğv et" onConfirm={() => void act(x.id, 'cancel')}/></>}</div></td></tr>)}</Table> : <Empty/>}<Pager data={data} page={page} setPage={setPage}/></Panel>{modal && <Modal title="Yeni sifariş" onClose={() => setModal(false)}><form onSubmit={e => void create(e)}><Field label="Təsdiqlənmiş təklif"><select required value={quoteId} onChange={e => setQuoteId(e.target.value)}><option value="">Seçin</option>{quotes.filter(q => q.status === 'Accepted').map(q => <option key={q.id} value={q.id}>{q.number} · {q.totalAmount} {q.currency}</option>)}</select></Field><Field label="Sifariş nömrəsi"><input required maxLength={50} placeholder="O-2026-0001" value={number} onChange={e => setNumber(e.target.value)}/></Field><FormActions saving={busy} onCancel={() => setModal(false)}/></form></Modal>}</>;
+}

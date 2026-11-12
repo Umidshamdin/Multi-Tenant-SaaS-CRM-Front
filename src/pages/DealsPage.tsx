@@ -1,63 +1,23 @@
-import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { ArrowRight, CalendarClock, Ellipsis, Plus, Search, Sparkles } from 'lucide-react';
-import { allPages, customerApi, dealApi } from '../api/salesflow';
-import type { Customer, Deal, DealInput, DealStage } from '../api/types';
-import { useAction, useWorkspaceKey } from '../hooks/useCrud';
-import { Badge, Button, Empty, ErrorNotice, FormField, Loading, Modal, PageHeading, SafeForm } from '../components/UI';
-import { dateText, dealKey, dealLabel, initials, money } from '../utils/format';
-
-const stages:DealStage[]=['Prospecting','Qualification','Proposal','Negotiation','Won','Lost'];
-const tones=['blue','violet','amber','blue','green','red'] as const;
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { customerApi, dealApi, productApi } from '../api/salesflow';
+import type { Customer, Deal, DealProduct, Product } from '../api/types';
+import { usePaged } from '../hooks/useCrud';
+import { errorText } from '../api/http';
+import { useToast } from '../contexts/ToastContext';
+import { AddButton, Badge, ConfirmAction, Empty, ErrorBox, Field, FormActions, Loading, Modal, Money, Pager, PageTitle, Panel, Table } from '../components/UI';
+const stages = ['Prospecting', 'Qualification', 'Proposal', 'Negotiation'];
 export function DealsPage() {
-    const [creating,setCreating]=useState(false);const[editing,setEditing]=useState<Deal|null>(null);const[search,setSearch]=useState('');
-    const [view,setView]=useState<'kanban'|'list'>('kanban');
-    const key=useWorkspaceKey('deals'); const dashboard=useWorkspaceKey('dashboard');
-    const deals=useQuery({queryKey:key,queryFn:()=>allPages((p,s)=>dealApi.list(p,s))});
-    const customers=useQuery({queryKey:useWorkspaceKey('customersAll'),queryFn:()=>allPages((p,s)=>customerApi.list(p,s,undefined,true))});
-    const stageAction=useAction(({id,stage}:{id:string;stage:DealStage})=>dealApi.stage(id,stage),[key,dashboard],'Satış mərhələsi dəyişdirildi.');
-    const won=useAction((id:string)=>dealApi.won(id),[key,dashboard],'Satış qazanılmış kimi bağlandı.');
-    const lost=useAction((id:string)=>dealApi.lost(id),[key,dashboard],'Satış itirilmiş kimi bağlandı.');
-    const filtered=deals.data?.items.filter(item=>item.title.toLowerCase().includes(search.toLowerCase())||customers.data?.items.find(x=>x.id===item.customerId)?.name.toLowerCase().includes(search.toLowerCase()))||[];
-    function changeStage(item:Deal,stage:DealStage) {
-        if(dealKey(item.stage)===dealKey(stage))return;
-        const val=dealKey(stage);
-        if(val==='Won')won.mutate(item.id);
-        else if(val==='Lost')lost.mutate(item.id);
-        else stageAction.mutate({id:item.id,stage});
-    }
-    const busy=stageAction.isPending||won.isPending||lost.isPending;
-    return <div className="page-stack"><PageHeading eyebrow="CRM / SALES" title="Satış pipeline-ı" description="Bütün satış imkanlarını mərhələlər üzrə izləyin." action={<Button onClick={()=>setCreating(true)}><Plus size={17}/> Yeni satış</Button>}/>
-        <div className="deal-toolbar"><div className="filter-search"><Search size={17}/><input className="global-filter-input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Satış və ya müştəri axtar..."/></div><div className="segmented"><button className={view==='kanban'?'selected':''} onClick={()=>setView('kanban')}>Kanban</button><button className={view==='list'?'selected':''} onClick={()=>setView('list')}>Siyahı</button></div><span className="record-count">{filtered.length} satış</span></div>
-        {deals.isLoading?<Loading/>:deals.isError?<ErrorNotice message={deals.error?.message}/>:<>
-            {deals.data?.truncated&&<div className="info-note">Kanban ilk 2 000 satış üzrə göstərilir.</div>}
-            {view==='kanban'?<div className="kanban-board">{stages.map((stage,i)=>{const list=filtered.filter(item=>dealKey(item.stage)===dealKey(stage));return <div className="kanban-column" key={stage} onDragOver={event=>event.preventDefault()} onDrop={event=>{event.preventDefault();const id=event.dataTransfer.getData('text/plain');const item=filtered.find(x=>x.id===id);if(item&&!busy)changeStage(item,stage);}}><div className="kanban-header"><span className={`kanban-indicator lane-${i}`}/><strong>{dealLabel(stage)}</strong><span className="kanban-count">{list.length}</span></div><div className="kanban-total">{list.length} satış</div><div className="kanban-items">{list.map(item=><DealCard key={item.id} item={item} customer={customers.data?.items.find(x=>x.id===item.customerId)} onEdit={()=>setEditing(item)} onMove={stage=>changeStage(item,stage)} disabled={busy}/>)}{!list.length&&<div className="kanban-empty">Satış yoxdur</div>}</div></div>})}</div>:<section className="panel table-panel"><div className="table-scroll"><table className="data-table"><thead><tr><th>Satış</th><th>Müştəri</th><th>Məbləğ</th><th>Mərhələ</th><th>Tarix</th><th/></tr></thead><tbody>{filtered.map(item=><tr key={item.id}><td><strong>{item.title}</strong></td><td>{customers.data?.items.find(x=>x.id===item.customerId)?.name||item.customerId.slice(0,8)}</td><td>{money(item.amount,item.currency)}</td><td><Badge tone={tones[stages.findIndex(x=>dealKey(x)===dealKey(item.stage))]||'blue'}>{dealLabel(item.stage)}</Badge></td><td>{dateText(item.createdAt)}</td><td><Button variant="ghost" onClick={()=>setEditing(item)}>Redaktə et</Button></td></tr>)}</tbody></table></div>{!filtered.length&&<Empty title="Satış tapılmadı"/>}</section>}
-        </>}
-        {creating&&<DealEditor customers={customers.data?.items||[]} onClose={()=>setCreating(false)}/>}
-        {editing&&<DealEditor deal={editing} customers={customers.data?.items||[]} onClose={()=>setEditing(null)}/>}
-    </div>;
-}
-function DealCard({item,customer,onEdit,onMove,disabled}:{item:Deal;customer?:Customer;onEdit:()=>void;onMove:(stage:DealStage)=>void;disabled:boolean}) {
-    const terminal=['Won','Lost'].includes(dealKey(item.stage));
-    return <article className="deal-card" draggable={!disabled&&!terminal} onDragStart={event=>event.dataTransfer.setData('text/plain',item.id)}>
-        <div className="deal-card-top"><span className="deal-type"><Sparkles size={13}/> Sales</span><button aria-label="Satışı redaktə et" className="icon-btn" onClick={onEdit}><Ellipsis size={19}/></button></div>
-        <h3>{item.title}</h3><div className="deal-company"><span className="deal-company-avatar">{initials(customer?.name||'CRM')}</span>{customer?.name||`Müştəri #${item.customerId.slice(0,8)}`}</div>
-        <div className="deal-card-bottom"><strong>{money(item.amount,item.currency)}</strong><small><CalendarClock size={13}/>{dateText(item.createdAt)}</small></div>
-        {!terminal&&<select className="deal-move" aria-label="Satış mərhələsini dəyiş" value={dealKey(item.stage)} disabled={disabled} onChange={e=>onMove(e.target.value)}>{stages.map(s=><option key={s} value={s}>{dealLabel(s)}</option>)}</select>}
-    </article>;
-}
-function DealEditor({deal,customers,onClose}:{deal?:Deal;customers:Customer[];onClose:()=>void}) {
-    const [customerId,setCustomer]=useState(deal?.customerId||customers[0]?.id||'');const[title,setTitle]=useState(deal?.title||'');const[amount,setAmount]=useState(String(deal?.amount||''));const[currency,setCurrency]=useState(deal?.currency||'USD');
-    const key=useWorkspaceKey('deals');const dashboard=useWorkspaceKey('dashboard');
-    const create=useAction((data:DealInput)=>dealApi.create(data),[key,dashboard],'Satış yaradıldı.');
-    const edit=useAction(async (data:{title:string;amount:number})=>{if(!deal)throw new Error('Satış tapılmadı.');await dealApi.updateTitle(deal.id,data.title);return dealApi.updateAmount(deal.id,data.amount);},[key,dashboard],'Satış yeniləndi.');
-    const isClosed=deal&&['Won','Lost'].includes(dealKey(deal.stage));
-    return <Modal title={deal?'Satışı redaktə et':'Yeni satış'} subtitle="Satış məlumatlarını daxil edin." onClose={onClose}><SafeForm className="form-stack" onSubmit={()=>{const value=Number(amount);return (deal?edit.mutateAsync({title:title.trim(),amount:value}):create.mutateAsync({customerId,title:title.trim(),amount:value,currency:currency.trim().toUpperCase()})).then(onClose);}}>
-        <FormField label="Müştəri" required><select value={customerId} onChange={e=>setCustomer(e.target.value)} disabled={!!deal} required><option value="">Müştəri seçin</option>{customers.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></FormField>
-        {!customers.length&&!deal&&<div className="info-note">Əvvəlcə Müştərilər bölməsindən aktiv müştəri yaradın.</div>}
-        <FormField label="Satışın adı" required><input required maxLength={200} value={title} onChange={e=>setTitle(e.target.value)} placeholder="Məsələn, İllik SaaS abunəliyi" disabled={!!isClosed}/></FormField>
-        <div className="field-grid"><FormField label="Məbləğ" required><input required type="number" min="0.01" step="0.01" value={amount} onChange={e=>setAmount(e.target.value)} disabled={!!isClosed}/></FormField><FormField label="Valyuta"><input maxLength={3} value={currency} onChange={e=>setCurrency(e.target.value)} disabled={!!deal}/></FormField></div>
-        {isClosed&&<div className="info-note">Bağlanmış satış backend qaydalarına əsasən redaktə edilə bilməz.</div>}
-        <div className="modal-actions"><Button type="button" variant="secondary" onClick={onClose}>Bağla</Button><Button loading={create.isPending||edit.isPending} disabled={!!isClosed||(!deal&&!customers.length)}>{deal?'Yenilə':'Satış yarat'} <ArrowRight size={16}/></Button></div>
-    </SafeForm></Modal>;
+  const notify = useToast(); const [filter, setFilter] = useState(''); const loader = useCallback((n: number) => dealApi.list(n, undefined, filter || undefined), [filter]);
+  const { data, loading, error, page, setPage, refresh } = usePaged(loader);
+  const [customers, setCustomers] = useState<Customer[]>([]); const [products, setProducts] = useState<Product[]>([]);
+  useEffect(() => { void Promise.all([customerApi.list(), productApi.list()]).then(([c, p]) => { setCustomers(c.items); setProducts(p.items.filter(x => x.isActive)); }).catch(e => notify(errorText(e), false)); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const [creating, setCreating] = useState(false); const [customerId, setCustomerId] = useState(''); const [title, setTitle] = useState(''); const [amount, setAmount] = useState('0'); const [currency, setCurrency] = useState('AZN'); const [busy, setBusy] = useState(false);
+  const [details, setDetails] = useState<Deal | null>(null); const [lines, setLines] = useState<DealProduct[]>([]); const [linesError, setLinesError] = useState('');
+  const [lineProductId, setLineProductId] = useState(''); const [quantity, setQuantity] = useState('1'); const [discount, setDiscount] = useState('0'); const [tax, setTax] = useState('18');
+  async function create(e: FormEvent) { e.preventDefault(); setBusy(true); try { await dealApi.create({ customerId, title, amount: Number(amount), currency }); notify('Satış fürsəti yaradıldı.'); setCreating(false); await refresh(); } catch (err) { notify(errorText(err), false); } finally { setBusy(false); } }
+  async function action(operation: () => Promise<unknown>) { try { await operation(); notify('Satış fürsəti yeniləndi.'); await refresh(); } catch (e) { notify(errorText(e), false); } }
+  async function openDetails(deal: Deal) { setDetails(deal); setLinesError(''); try { const result = await dealApi.lines(deal.id); setLines(result.items.filter(x => x.isActive)); } catch (e) { setLinesError(errorText(e)); } }
+  async function addLine(e: FormEvent) { e.preventDefault(); if (!details) return; setBusy(true); try { await dealApi.addLine(details.id, { productId: lineProductId, quantity: Number(quantity), discountPercent: Number(discount), taxPercent: Number(tax) }); notify('Məhsul deal-ə əlavə edildi.'); await openDetails(details); } catch (err) { notify(errorText(err), false); } finally { setBusy(false); } }
+  async function removeLine(lineId: string) { if (!details) return; try { await dealApi.removeLine(details.id, lineId); await openDetails(details); notify('Sətir silindi.'); } catch (err) { notify(errorText(err), false); } }
+  return <><PageTitle title="Satış fürsətləri" description="Sövdələşmələr, mərhələlər və məhsul sətirləri" action={<AddButton onClick={() => setCreating(true)} label="Yeni deal"/>}/><Panel><div className="toolbar"><select value={filter} onChange={e => { setFilter(e.target.value); setPage(1); }}><option value="">Bütün mərhələlər</option>{[...stages, 'Won', 'Lost'].map(s => <option key={s}>{s}</option>)}</select></div>{error && <ErrorBox text={error}/ >}{loading ? <Loading/> : data?.items.length ? <Table heads={['Satış fürsəti', 'Müştəri', 'Məbləğ', 'Mərhələ', 'İdarəetmə']}>{data.items.map(x => <tr key={x.id}><td><strong>{x.title}</strong></td><td>{customers.find(c => c.id === x.customerId)?.name || x.customerId.slice(0, 8)}</td><td><Money value={x.amount} currency={x.currency}/></td><td><Badge text={x.stage}/></td><td><div className="actions"><button className="btn btn-small btn-secondary" onClick={() => void openDetails(x)}>Məhsullar</button>{!['Won','Lost'].includes(x.stage) && <><button className="btn btn-small" onClick={() => { const value = prompt('Deal başlığını dəyiş', x.title); if (value !== null && value.trim()) void action(() => dealApi.title(x.id, value)); }}>Başlıq</button><button className="btn btn-small" onClick={() => { const value = prompt('Yeni məbləğ', String(x.amount)); if (value !== null && Number(value) > 0) void action(() => dealApi.amount(x.id, Number(value))); }}>Məbləğ</button></>}{!['Won', 'Lost'].includes(x.stage) && <><select className="stage-select" value={x.stage} onChange={e => void action(() => dealApi.move(x.id, e.target.value))}>{stages.map(s => <option key={s}>{s}</option>)}</select><ConfirmAction label="Qazanıldı" onConfirm={() => void action(() => dealApi.won(x.id))}/><ConfirmAction label="İtirildi" danger onConfirm={() => void action(() => dealApi.lost(x.id))}/></>}</div></td></tr>)}</Table> : <Empty/>}<Pager data={data} page={page} setPage={setPage}/></Panel>{creating && <Modal title="Yeni satış fürsəti" onClose={() => setCreating(false)}><form onSubmit={e => void create(e)}><Field label="Müştəri"><select required value={customerId} onChange={e => setCustomerId(e.target.value)}><option value="">Seçin</option>{customers.filter(c => c.isActive).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field><Field label="Başlıq"><input required maxLength={200} value={title} onChange={e => setTitle(e.target.value)}/></Field><div className="form-grid"><Field label="Məbləğ"><input required type="number" min="0.01" step="0.01" value={amount} onChange={e => setAmount(e.target.value)}/></Field><Field label="Valyuta"><select value={currency} onChange={e => setCurrency(e.target.value)}><option>AZN</option><option>USD</option><option>EUR</option></select></Field></div><FormActions saving={busy} onCancel={() => setCreating(false)}/></form></Modal>}{details && <Modal title={`${details.title} — məhsullar`} wide onClose={() => setDetails(null)}>{linesError && <ErrorBox text={linesError}/>}<Table heads={['SKU', 'Məhsul', 'Miqdar', 'Qiymət', 'Nəticə', '']}>{lines.map(x => <tr key={x.id}><td>{x.sku}</td><td>{x.name}</td><td>{x.quantity}</td><td><Money value={x.unitPrice} currency={x.currency}/></td><td><Money value={x.netAmount + x.taxAmount} currency={x.currency}/></td><td><ConfirmAction danger label="Sil" onConfirm={() => void removeLine(x.id)}/></td></tr>)}</Table>{!lines.length && <Empty text="Məhsul əlavə edilməyib."/>}<form className="inline-form" onSubmit={e => void addLine(e)}><div className="form-grid"><Field label="Məhsul"><select required value={lineProductId} onChange={e => setLineProductId(e.target.value)}><option value="">Seçin</option>{products.filter(p => p.currency === details.currency).map(p => <option key={p.id} value={p.id}>{p.sku} · {p.name}</option>)}</select></Field><Field label="Miqdar"><input required type="number" min="0.01" step="0.01" value={quantity} onChange={e => setQuantity(e.target.value)}/></Field><Field label="Endirim %"><input type="number" min="0" max="100" value={discount} onChange={e => setDiscount(e.target.value)}/></Field><Field label="ƏDV %"><input type="number" min="0" max="100" value={tax} onChange={e => setTax(e.target.value)}/></Field></div><button className="btn btn-primary" disabled={busy || !!linesError}>Məhsul əlavə et</button></form></Modal>}</>;
 }

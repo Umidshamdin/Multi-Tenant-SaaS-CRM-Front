@@ -1,40 +1,15 @@
-import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { CalendarClock, Check, CheckCircle2, Circle, Plus, UserRound } from 'lucide-react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { memberApi, taskApi } from '../api/salesflow';
-import type { Member, SalesTask, TaskInput, SalesTaskStatus } from '../api/types';
-import { useAction, useWorkspaceKey } from '../hooks/useCrud';
-import { useAuth } from '../contexts/AuthContext';
-import { Badge, Button, Empty, ErrorNotice, FormField, Loading, Modal, PageHeading, Pagination, SafeForm } from '../components/UI';
-import { dateText, localDateWithOffset, roleKey, shortId, taskKey, toDateTimeLocal } from '../utils/format';
-
+import type { Member, Task } from '../api/types';
+import { localOffsetIso, errorText } from '../api/http';
+import { usePaged } from '../hooks/useCrud';
+import { useToast } from '../contexts/ToastContext';
+import { AddButton, Badge, ConfirmAction, DateText, Empty, ErrorBox, Field, FormActions, Loading, Modal, Pager, PageTitle, Panel, Table } from '../components/UI';
 export function TasksPage() {
-    const [page,setPage]=useState(1);const[filter,setFilter]=useState<SalesTaskStatus|'all'>('all');const[creating,setCreating]=useState(false);
-    const [editing,setEditing]=useState<SalesTask|null>(null);
-    const {workspace}=useAuth(); const canAssign=['Owner','Admin','Manager'].includes(roleKey(workspace?.role||'Sales'));
-    const key=useWorkspaceKey('tasks');const dashboard=useWorkspaceKey('dashboard');
-    const members=useQuery({queryKey:useWorkspaceKey('membersAll'),queryFn:()=>memberApi.list(1,100,true)});
-    const tasks=useQuery({queryKey:[...key,page,filter],queryFn:()=>taskApi.list(page,20,filter==='all'?undefined:filter)});
-    const complete=useAction((id:string)=>taskApi.complete(id),[key,dashboard],'Tapşırıq tamamlandı.');
-    const memberName=(id:string|null)=>id?`Üzv · ${shortId(id)}`:'Təyin edilməyib';
-    return <div className="page-stack"><PageHeading eyebrow="WORKSPACE / TASKS" title="Tapşırıqlar" description="Tapşırıqları planlaşdırın, təyin edin və icrasını izləyin." action={<Button onClick={()=>setCreating(true)}><Plus size={17}/> Yeni tapşırıq</Button>}/>
-        <div className="tabs">{([['all','Hamısı'],['Open','Açıq'],['Completed','Tamamlanmış']] as [SalesTaskStatus|'all', string][]).map(([val,label])=><button key={val} className={filter===val?'tab-active':''} onClick={()=>{setFilter(val);setPage(1);}}>{label}</button>)}</div>
-        <section className="panel table-panel"><div className="table-tools"><div><h2>Komanda tapşırıqları</h2><p className="muted">Tapşırıqların statusu və icra müddəti</p></div><span className="record-count">{tasks.data?.totalCount||0} tapşırıq</span></div>
-        {tasks.isLoading?<Loading/>:tasks.isError?<ErrorNotice message={tasks.error?.message}/>:tasks.data?.items.length?<div className="task-list">{tasks.data.items.map(item=><div className="task-row" key={item.id}><div className={`task-check ${taskKey(item.status)==='Completed'?'completed':''}`}>{taskKey(item.status)==='Completed'?<Check size={17}/>:<Circle size={18}/>}</div><div className="task-primary"><strong className={taskKey(item.status)==='Completed'?'done-text':''}>{item.title}</strong><span><CalendarClock size={14}/>{item.dueAt?dateText(item.dueAt):'Son tarix yoxdur'}<span className="task-sep">·</span><UserRound size={14}/>{memberName(item.assignedMemberId)}</span></div><Badge tone={taskKey(item.status)==='Completed'?'green':'amber'}>{taskKey(item.status)==='Completed'?'Tamamlanıb':'Açıq'}</Badge><div className="task-buttons">{taskKey(item.status)==='Open'&&<><Button variant="ghost" onClick={()=>setEditing(item)}>Düzəliş</Button><Button variant="secondary" disabled={complete.isPending} onClick={()=>complete.mutate(item.id)}><CheckCircle2 size={15}/> Tamamla</Button></>}</div></div>)}</div>:<Empty title="Tapşırıq yoxdur" description="İlk tapşırığınızı yaradın." action={<Button onClick={()=>setCreating(true)}><Plus size={16}/> Əlavə et</Button>}/>}
-        <Pagination data={tasks.data} change={setPage}/></section>
-        {creating&&<TaskEditor members={members.data?.items||[]} canAssign={canAssign} onClose={()=>setCreating(false)}/>}
-        {editing&&<TaskEditor task={editing} members={members.data?.items||[]} canAssign={canAssign} onClose={()=>setEditing(null)}/>}
-    </div>;
-}
-function TaskEditor({task,members,canAssign,onClose}:{task?:SalesTask;members:Member[];canAssign:boolean;onClose:()=>void}) {
-    const [title,setTitle]=useState(task?.title||'');const[memberId,setMemberId]=useState(task?.assignedMemberId||'');const[dueAt,setDueAt]=useState(toDateTimeLocal(task?.dueAt||null));
-    const key=useWorkspaceKey('tasks');const dashboard=useWorkspaceKey('dashboard');
-    const create=useAction((data:TaskInput)=>taskApi.create(data),[key,dashboard],'Tapşırıq yaradıldı.');
-    const save=useAction(async()=>{if(!task)throw new Error('Tapşırıq yoxdur.');if(canAssign&&memberId&&memberId!==task.assignedMemberId)await taskApi.assign(task.id,memberId);return taskApi.dueDate(task.id,localDateWithOffset(dueAt));},[key,dashboard],'Tapşırıq yeniləndi.');
-    return <Modal title={task?'Tapşırığı redaktə et':'Yeni tapşırıq'} subtitle={task?'Tarixi və təyinatı dəyişə bilərsən. Tapşırıq adı backend-də yenilənmir.':'Komanda üçün yeni iş yaradın.'} onClose={onClose}><SafeForm className="form-stack" onSubmit={()=>task?save.mutateAsync(undefined).then(onClose):create.mutateAsync({title:title.trim(),assignedMemberId:memberId||null,dueAt:localDateWithOffset(dueAt)}).then(onClose)}>
-        <FormField label="Başlıq" required><input required value={title} onChange={e=>setTitle(e.target.value)} maxLength={200} disabled={!!task} placeholder="Məsələn, Təklif sənədini göndər"/></FormField>
-        <FormField label="İcraçı"><select value={memberId} onChange={e=>setMemberId(e.target.value)} disabled={!!task&&!canAssign}><option value="">Təyin edilməyib</option>{members.map(member=><option key={member.id} value={member.id}>{roleKey(member.role)} · {shortId(member.identityUserId)}</option>)}</select></FormField>
-        <FormField label="Son tarix" hint="Tarix serverə lokal timezone offset-i ilə göndərilir."><input type="datetime-local" value={dueAt} onChange={e=>setDueAt(e.target.value)}/></FormField>
-        <div className="modal-actions"><Button type="button" variant="secondary" onClick={onClose}>Ləğv et</Button><Button loading={create.isPending||save.isPending}>Yadda saxla</Button></div>
-    </SafeForm></Modal>;
+  const notify = useToast(); const [filter, setFilter] = useState(''); const loader = useCallback((p: number) => taskApi.list(p, filter), [filter]); const { data, error, loading, page, setPage, refresh } = usePaged(loader);
+  const [members, setMembers] = useState<Member[]>([]); useEffect(() => { memberApi.list().then(x => setMembers(x.items)).catch(e => notify(errorText(e), false)); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const [modal, setModal] = useState(false); const [title, setTitle] = useState(''); const [memberId, setMemberId] = useState(''); const [due, setDue] = useState(''); const [busy, setBusy] = useState(false);
+  async function create(e: FormEvent) { e.preventDefault(); setBusy(true); try { await taskApi.create({ title, assignedMemberId: memberId || null, dueAt: localOffsetIso(due) }); setModal(false); notify('Tapşırıq yaradıldı.'); await refresh(); } catch (err) { notify(errorText(err), false); } finally { setBusy(false); } }
+  async function action(f: () => Promise<unknown>) { try { await f(); notify('Tapşırıq yeniləndi.'); await refresh(); } catch (e) { notify(errorText(e), false); } }
+  return <><PageTitle title="Tapşırıqlar" description="Komanda tapşırıqları və müddətləri" action={<AddButton onClick={() => setModal(true)} label="Yeni tapşırıq"/>}/><Panel><div className="toolbar"><select value={filter} onChange={e => { setFilter(e.target.value); setPage(1); }}><option value="">Bütün tapşırıqlar</option><option value="Open">Açıq</option><option value="Completed">Tamamlanmış</option></select></div>{error && <ErrorBox text={error}/ >}{loading ? <Loading/> : data?.items.length ? <Table heads={['Tapşırıq', 'İcraçı', 'Son tarix', 'Status', 'Əməliyyat']}>{data.items.map((x: Task) => <tr key={x.id}><td><strong>{x.title}</strong></td><td>{members.find(m => m.id === x.assignedMemberId)?.identityUserId || 'Təyin edilməyib'}</td><td><DateText value={x.dueAt}/></td><td><Badge text={x.status}/></td><td><div className="actions">{x.status === 'Open' && <><select className="stage-select" value={x.assignedMemberId || ''} onChange={e => { if (e.target.value) void action(() => taskApi.assign(x.id, e.target.value)); }}><option value="">İcraçı seçin</option>{members.filter(m => m.isActive).map(m => <option value={m.id} key={m.id}>{m.identityUserId.slice(0, 12)}</option>)}</select><button className="btn btn-small" onClick={() => { const value = prompt('Yeni lokal son tarix (YYYY-MM-DDTHH:mm), boş qoysanız tarix silinəcək', x.dueAt?.slice(0,16) || ''); if (value !== null) void action(() => taskApi.due(x.id, localOffsetIso(value))); }}>Tarixi dəyiş</button><ConfirmAction label="Tamamla" onConfirm={() => void action(() => taskApi.complete(x.id))}/></>}</div></td></tr>)}</Table> : <Empty/>}<Pager page={page} setPage={setPage} data={data}/></Panel>{modal && <Modal title="Yeni tapşırıq" onClose={() => setModal(false)}><form onSubmit={e => void create(e)}><Field label="Başlıq"><input required maxLength={200} value={title} onChange={e => setTitle(e.target.value)}/></Field><Field label="İcraçı"><select value={memberId} onChange={e => setMemberId(e.target.value)}><option value="">Təyin edilməyib</option>{members.filter(m => m.isActive).map(m => <option key={m.id} value={m.id}>{m.identityUserId} ({m.role})</option>)}</select></Field><Field label="Son tarix (lokal)"><input type="datetime-local" value={due} onChange={e => setDue(e.target.value)}/></Field><FormActions saving={busy} onCancel={() => setModal(false)}/></form></Modal>}</>;
 }

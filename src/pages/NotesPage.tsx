@@ -1,0 +1,16 @@
+import { useCallback, useState, type FormEvent } from 'react';
+import { enterpriseApi } from '../api/salesflow';
+import { usePaged } from '../hooks/useCrud';
+import { useToast } from '../contexts/ToastContext';
+import { errorText } from '../api/http';
+import { AddButton, Empty, ErrorBox, Field, Loading, Modal, Pager, PageTitle, Panel, Table } from '../components/UI';
+const kinds = ['Customer','Lead','Deal','Contact','Product'];
+export function NotesPage() {
+  const notify = useToast(); const [kind, setKind] = useState('Customer'); const [id, setId] = useState(''); const [queryKind, setQueryKind] = useState(''); const [queryId, setQueryId] = useState('');
+  const loader = useCallback((p: number) => queryId ? enterpriseApi.notes(queryKind, queryId, p) : Promise.resolve({ items: [], page: 1, pageSize: 20, totalCount: 0, totalPages: 0 }), [queryId, queryKind]);
+  const { data, error, loading, page, setPage, refresh } = usePaged(loader);
+  const [modal, setModal] = useState(false); const [body, setBody] = useState(''); const [busy, setBusy] = useState(false);
+  function search(e: FormEvent) { e.preventDefault(); setQueryKind(kind); setQueryId(id.trim()); setPage(1); }
+  async function create(e: FormEvent) { e.preventDefault(); if (!queryId) return; setBusy(true); try { await enterpriseApi.createNote(queryKind, queryId, body); notify('Qeyd əlavə edildi.'); setModal(false); setBody(''); await refresh(); } catch (err) { notify(errorText(err), false); } finally { setBusy(false); } }
+  return <><PageTitle title="CRM qeydləri" description="Müştəri, lead, deal və məhsula bağlı qeydlər" action={<AddButton onClick={() => setModal(true)} label="Qeyd əlavə et"/>}/><Panel><form className="toolbar" onSubmit={search}><select value={kind} onChange={e => setKind(e.target.value)}>{kinds.map(k => <option key={k}>{k}</option>)}</select><input required placeholder="Əlaqəli qeydin UUID-si" value={id} onChange={e => setId(e.target.value)}/><button className="btn btn-secondary">Axtar</button></form>{!queryId && <p className="muted pad">Qeydləri görmək üçün əlaqəli obyektin ID-sini yazın.</p>}{error && <ErrorBox text={error}/ >}{loading ? <Loading/> : data?.items.length ? <Table heads={['Qeyd', 'Müəllif', 'Əməliyyat']}>{data.items.map(n => <tr key={n.id}><td className="wrap-cell">{n.body}</td><td>{n.authorMemberId?.slice(0, 8)}</td><td><button className="btn btn-small" onClick={() => { const text = prompt('Qeyd mətnini dəyiş', n.body); if (text !== null && text.trim()) void enterpriseApi.editNote(n.id, text).then(() => { notify('Qeyd yeniləndi.'); return refresh(); }).catch(e => notify(errorText(e), false)); }}>Redaktə</button></td></tr>)}</Table> : queryId && <Empty/>}<Pager data={data} page={page} setPage={setPage}/></Panel>{modal && <Modal title="Yeni qeyd" onClose={() => setModal(false)}><form onSubmit={e => void create(e)}><p className="muted">Seçilmiş obyekt: {queryKind} / {queryId || 'Öncə obyekt seçin'}</p><Field label="Qeyd mətni"><textarea rows={5} required maxLength={4000} value={body} onChange={e => setBody(e.target.value)}/></Field><button disabled={!queryId || busy} className="btn btn-primary">Yadda saxla</button><button type="button" className="btn" onClick={() => setModal(false)}>Bağla</button></form></Modal>}</>;
+}
